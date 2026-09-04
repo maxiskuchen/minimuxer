@@ -3,10 +3,10 @@
     {
       "identity" : "remotepairingkit",
       "kind" : "remoteSourceControl",
-      "location" : "https://github.com/mahee96/RemotePairingKit.git",
+      "location" : "https://github.com/maxiskuchen/RemotePairingKit.git",
       "state" : {
-        "branch" : "main",
-        "revision" : "7b9d269ec64027d73a50faa917cb18fa218c1fc9"
+        "branch" : "sidestore-openssl-fix",
+        "revision" : "8f0ffff"
       }
     },
     {
