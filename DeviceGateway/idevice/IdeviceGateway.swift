@@ -250,48 +250,92 @@ public final class IdeviceGateway: @unchecked Sendable, DeviceGatewayAPI {
         isInitialized = true
     }
 
-    private func withSockaddr<R>(ip: String, port: UInt16, _ body: (UnsafePointer<sockaddr>, socklen_t) throws -> R) throws -> R {
-        if ip.contains(":") {
-            var addr6 = sockaddr_in6()
-            addr6.sin6_len = __uint8_t(MemoryLayout<sockaddr_in6>.size)
-            addr6.sin6_family = sa_family_t(AF_INET6)
-            addr6.sin6_port = port.bigEndian
-            
-            var cleanIp = ip
-            if let scopeRange = cleanIp.range(of: "%") {
-                let ifaceName = String(cleanIp[scopeRange.upperBound...])
-                cleanIp = String(cleanIp[..<scopeRange.lowerBound])
-                addr6.sin6_scope_id = if_nametoindex(ifaceName)
-            } else if cleanIp.lowercased().hasPrefix("fe80:") {
-                addr6.sin6_scope_id = if_nametoindex("en0")
-            }
-            
-            guard inet_pton(AF_INET6, cleanIp, &addr6.sin6_addr) == 1 else {
-                throw IdeviceGatewayError(.invalidTargetEndpoint, reason: "Invalid IPv6 address: \(ip)")
-            }
-            
-            return try withUnsafePointer(to: &addr6) { ptr in
-                try ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { sockaddrPtr in
-                    try body(sockaddrPtr, socklen_t(MemoryLayout<sockaddr_in6>.size))
-                }
-            }
-        } else {
-            var addr = sockaddr_in()
-            addr.sin_len = __uint8_t(MemoryLayout<sockaddr_in>.size)
-            addr.sin_family = sa_family_t(AF_INET)
+private func withSockaddr<R>(
+    ip: String,
+    port: UInt16,
+    _ body: (UnsafePointer<sockaddr>, socklen_t) throws -> R
+) throws -> R {
+    var hints = addrinfo()
+    hints.ai_family = AF_UNSPEC
+    hints.ai_socktype = SOCK_STREAM
+
+    var result: UnsafeMutablePointer<addrinfo>?
+
+    let portString = String(port)
+
+    let error = getaddrinfo(
+        ip,
+        portString,
+        &hints,
+        &result
+    )
+
+    guard error == 0, let firstResult = result else {
+        throw IdeviceGatewayError(
+            .invalidTargetEndpoint,
+            reason: "Could not resolve endpoint: \(ip)"
+        )
+    }
+
+    defer {
+        freeaddrinfo(firstResult)
+    }
+
+    var current: UnsafeMutablePointer<addrinfo>? = firstResult
+
+    while let info = current {
+        if info.pointee.ai_family == AF_INET {
+            var addr = info.pointee.ai_addr!
+                .withMemoryRebound(
+                    to: sockaddr_in.self,
+                    capacity: 1
+                ) { $0.pointee }
+
             addr.sin_port = port.bigEndian
-            
-            guard inet_pton(AF_INET, ip, &addr.sin_addr) == 1 else {
-                throw IdeviceGatewayError(.invalidTargetEndpoint, reason: "Invalid IPv4 address: \(ip)")
-            }
-            
+
             return try withUnsafePointer(to: &addr) { ptr in
-                try ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { sockaddrPtr in
-                    try body(sockaddrPtr, socklen_t(MemoryLayout<sockaddr_in>.size))
+                try ptr.withMemoryRebound(
+                    to: sockaddr.self,
+                    capacity: 1
+                ) { sockaddrPtr in
+                    try body(
+                        sockaddrPtr,
+                        socklen_t(MemoryLayout<sockaddr_in>.size)
+                    )
                 }
             }
         }
+
+        if info.pointee.ai_family == AF_INET6 {
+            var addr = info.pointee.ai_addr!
+                .withMemoryRebound(
+                    to: sockaddr_in6.self,
+                    capacity: 1
+                ) { $0.pointee }
+
+            addr.sin6_port = port.bigEndian
+
+            return try withUnsafePointer(to: &addr) { ptr in
+                try ptr.withMemoryRebound(
+                    to: sockaddr.self,
+                    capacity: 1
+                ) { sockaddrPtr in
+                    try body(
+                        sockaddrPtr,
+                        socklen_t(MemoryLayout<sockaddr_in6>.size)
+                    )
+                }
+            }
+        }
+
+        current = info.pointee.ai_next
     }
+
+    throw IdeviceGatewayError(
+        .invalidTargetEndpoint,
+        reason: "No usable address found for: \(ip)"
+    )
+}
 
     private func ensureRPConnection() throws {
         debugLog("[IdeviceGateway] ensureRPConnection() started, adapter: \(String(describing: adapter)), handshake: \(String(describing: handshake))")
